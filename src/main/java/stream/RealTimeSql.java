@@ -10,6 +10,7 @@ import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.kstream.KStream;
 
+import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -29,11 +30,6 @@ class WordCountDemo {
 
         StreamsBuilder builder = new StreamsBuilder();
         KStream<String, String> source = builder.stream("maxwell");
-        /**
-         *  {"database":"hadoop","table":"test","type":"insert","ts":1537255108,"xid":922,"commit":true,"data":{"id":3,"name":"dkey3","address":"Shanghai"}}
-         *   {"database":"hadoop","table":"test","type":"update","ts":1537255506,"xid":1158,"commit":true,"data":{"id":1,"name":"dkey1","address":"ShangHai"},"old":{"name":"dkey"}}
-         *   {"database":"hadoop","table":"test","type":"delete","ts":1537258022,"xid":2287,"commit":true,"data":{"id":8,"name":"dkey8","address":"Shanghai"}}
-         */
         source.foreach((key,value)-> {
             System.out.println(value);
             System.out.println(orginalSql(value));
@@ -63,6 +59,8 @@ class WordCountDemo {
             return insertSql(sqlobj);
         }else if ("delete".equals(sqltype)){
             return deleteSql(sqlobj);
+        }else if ("update".equals(sqltype)){
+            return updateSql(sqlobj);
         }
         return "暂时不解析";
     }
@@ -120,14 +118,32 @@ class WordCountDemo {
 
     /**
      * 解析更新语句
-     *     对于mysql一条删除一句,可能在maxwell中上报多条记录,从而导致也会解析出多条语句，虽然不会出错，但是可能会影响性能
+     *     下面的解析流程要根据maxwell的数据上报格式进行
      * @param sqlobj
      * @return
      */
     public static String updateSql(JSONObject sqlobj){
-        JSONObject data=sqlobj.getJSONObject("data");
+        JSONObject newdata=sqlobj.getJSONObject("data");
+        JSONObject olddata=sqlobj.getJSONObject("old");
         String database=sqlobj.getString("database");
         String table=sqlobj.getString("table");
-       return "";
+        String basesql = String.format("update %s.%s set %s where %s",database,table,"%s","%s");
+        Set<String> allkeys=newdata.keySet();
+        Set<String> updatekeys=olddata.keySet();
+        Set<String> intersection = new HashSet<>(2);
+        intersection.addAll(allkeys);
+        // 获取交集——也就是更新的 key
+        intersection.retainAll(updatekeys);
+        String set="";
+        String where = "";
+        for (String key:allkeys){
+            if (updatekeys.contains(key)){
+                set = set + key + "=" +"\""+ newdata.getString(key)+"\"" + ",";
+                where=where+key+"="+"\""+olddata.getString(key)+"\""+" and ";
+            }else {
+                where=where+key+"="+"\""+newdata.getString(key)+"\""+" and ";
+            }
+        }
+        return String.format(basesql, set.substring(0,set.length()-1),where.substring(0,where.length()-5));
     }
 }
